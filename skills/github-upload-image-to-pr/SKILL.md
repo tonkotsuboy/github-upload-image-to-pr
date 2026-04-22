@@ -10,6 +10,7 @@ description: >-
   "show the image in the PR" should trigger this skill.
   Supports Playwright MCP / Chrome DevTools MCP / agent-browser as browser automation backends.
 allowed-tools: Bash(agent-browser:*), Bash(gh:*), Bash(npx:*), Bash(cp:*), ToolSearch, Read, Glob, Write
+license: MIT
 ---
 
 # Upload Image to PR
