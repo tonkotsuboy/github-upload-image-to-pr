@@ -5,6 +5,12 @@ An AI agent skill that uploads local images to a GitHub PR and embeds them in th
 ## Installation
 
 ```bash
+gh skill install tonkotsuboy/github-upload-image-to-pr github-upload-image-to-pr
+```
+
+or
+
+```bash
 npx skills add tonkotsuboy/github-upload-image-to-pr
 ```
 
@@ -58,6 +64,12 @@ Copyright 2026 tonkotsuboy
 ローカルの画像を GitHub PR に自動でアップロードし、PR の説明欄やコメントに埋め込む AI エージェント向けスキルです。
 
 ## インストール
+
+```bash
+gh skill install tonkotsuboy/github-upload-image-to-pr github-upload-image-to-pr
+```
+
+または
 
 ```bash
 npx skills add tonkotsuboy/github-upload-image-to-pr
