@@ -32,12 +32,17 @@ gh pr view --json number,url -q '"\(.number) \(.url)"'
 
 If multiple repos or branches are involved, confirm with the user which PR to target.
 
-Also, normalize the image paths to absolute paths. If a path contains special characters (e.g., Unicode narrow spaces from CleanShot X), copy the file to `/tmp/` first:
+Also, normalize the image paths to absolute paths and **stage a clean copy inside the current working directory** (the repo root) — not `/tmp/`:
 
 ```bash
-# e.g., to handle glob-matched paths with special chars
-cp /path/to/CleanShot*keyword*.png /tmp/screenshot.png
+# Stage inside the repo. The staged filename becomes the image's alt text on GitHub,
+# so give it a meaningful name. Delete it after the upload completes.
+cp /path/to/'CleanShot 2026-... .png' ./.upload-staging.png
 ```
+
+Why stage inside the repo and not `/tmp/`? MCP browser tools (Playwright / Chrome DevTools) can only read files **within their configured workspace root**, which is normally the project directory the session launched from. A path under `/tmp/` is outside that root, so the upload call fails with `Access denied: path ... is not within any of the configured workspace roots`. Staging the file in the repo works for every backend (agent-browser, a plain CLI, can read `/tmp/` too — but in-repo is universally safe).
+
+Staging also sidesteps paths with special characters (e.g. the Unicode narrow spaces CleanShot X puts in filenames), which otherwise break shell globbing and tool arguments. Remember to `rm` the staged file once you're done so it isn't accidentally committed.
 
 ## Tool Detection and Selection
 
@@ -95,101 +100,100 @@ agent-browser --headed --profile ~/.agent-browser-github open "https://github.co
 2. Ask the user to log in manually in the headed browser window.
 3. Wait for user confirmation, then navigate back to the PR page.
 
-### Step 2: Locate the file upload input
+### Step 2: Locate the upload target
 
-Take a snapshot/screenshot and scroll to the bottom to find the comment area.
+Scroll to the comment form at the bottom of the PR and take a snapshot.
 
-GitHub renders a file upload input in the comment form. Try these selectors in order (GitHub's UI can change — if one fails, try the next):
+**Key gotcha:** GitHub's real `<input type="file">` (id `fc-new_comment_field`) is `display:none`, so it does **not** appear in the accessibility snapshot — you can't get a uid/ref for it that way, and clicking it isn't possible. Instead, target the **visible affordance that opens the file picker**: the dropzone labeled *"Paste, drop, or click to add files"*, or the toolbar *"Attach files"* button. The browser tool clicks it, intercepts the native file chooser, and hands over your file.
 
-```javascript
-// Shared JS for MCP-based tools — tries multiple known selectors
-() => {
-  const selectors = [
-    'input[type="file"][id*="comment"]',
-    'input[type="file"][id="fc-new_comment_field"]',
-    '#new_comment_field',
-    'input[type="file"]'
-  ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el) return { found: true, id: el.id, selector: sel };
-  }
-  return { found: false };
-}
+In a snapshot these show up as:
+
+```
+button "Attach files"
+button "Paste, drop, or click to add files"   ← pass this uid/ref to the upload tool
 ```
 
-For Chrome DevTools MCP, you can also take a snapshot to find the `uid` of the file upload element directly.
+The comment box itself is a `<file-attachment>` web component wrapping a `<textarea id="new_comment_field">` — that textarea is where the resulting image reference lands (Step 4). GitHub's UI shifts over time, so if `new_comment_field` isn't there, fall back to `textarea[name="comment[body]"]` or `textarea[id*="comment"]`; the PR-description editor instead uses `textarea[name="pull_request[body]"]` / `textarea[id$="-body"]`.
 
-### Step 3: Upload images one by one
+### Step 3: Upload the image(s)
 
-Upload each image file using the detected tool. Wait **2–3 seconds between uploads** to allow GitHub to process each file.
-
-For multiple images, upload them all to the same comment textarea before extracting URLs — this is more efficient than navigating between uploads.
+Upload each file with the detected tool, passing the **dropzone / attach-button uid** from Step 2 (never the hidden input):
 
 ```javascript
-// Chrome DevTools MCP: upload_file requires the uid of the input element
-// Playwright MCP: browser_file_upload takes the element ref and file path(s) array
-// agent-browser: agent-browser upload {ref} {absolute_path}
+// Chrome DevTools MCP: upload_file({ uid: <dropzone uid>, filePath: <path inside the workspace root> })
+// Playwright MCP:      browser_file_upload({ paths: [<path inside the workspace root>] }) once the file chooser is open
+// agent-browser:       agent-browser upload {ref} {absolute_path}    (any path, /tmp/ ok)
 ```
 
-**Important:** Always use absolute file paths.
+Use the in-repo staged path from Step 0 for the MCP backends (see the workspace-root note there). Wait **2–3 seconds between uploads**. For multiple images, upload them all into the same comment box before extracting URLs — more efficient than navigating between uploads.
 
-### Step 4: Retrieve uploaded image URLs
+### Step 4: Retrieve the uploaded image URL(s)
 
-Wait **3–5 seconds** after the last upload, then read the textarea value. GitHub injects markdown image syntax like `![description](https://github.com/user-attachments/assets/...)` into the textarea:
+While uploading, GitHub shows a placeholder (`![Uploading file.png…]()`) in the textarea, then swaps it for the final reference once the file lands. So **poll the textarea until a `user-attachments/assets/` URL appears** instead of trusting a fixed sleep — it usually takes 1–5 seconds.
+
+**Important format change (the thing that breaks the old skill):** GitHub now injects an **HTML `<img>` tag**, not the old `![alt](url)` markdown:
+
+```
+<img width="342" height="354" alt="filename" src="https://github.com/user-attachments/assets/8fc1b84a-..." />
+```
+
+So extraction must **not** assume `![...](...)`. Match the asset URL by itself — this captures both the current `<img src>` form and any legacy markdown form:
 
 ```javascript
-// Shared JS — tries both known textarea IDs
+// MCP-based tools — returns every asset URL plus the raw value for sanity-checking
 () => {
   const ta = document.getElementById('new_comment_field')
-          || document.querySelector('textarea[id*="comment"]');
-  return ta ? ta.value : 'textarea not found';
+          || document.querySelector('textarea[name="comment[body]"], textarea[id*="comment"]');
+  if (!ta) return { error: 'textarea not found' };
+  const urls = [...ta.value.matchAll(/https:\/\/github\.com\/user-attachments\/assets\/[0-9a-fA-F-]+/g)].map(m => m[0]);
+  return { raw: ta.value, urls };
 }
 ```
 
 ```bash
 # agent-browser
-agent-browser eval 'document.getElementById("new_comment_field")?.value || document.querySelector("textarea[id*=comment]")?.value || "not found"'
+agent-browser eval 'const ta=document.getElementById("new_comment_field")||document.querySelector("textarea[id*=comment]");JSON.stringify([...(ta?.value||"").matchAll(/https:\/\/github\.com\/user-attachments\/assets\/[0-9a-fA-F-]+/g)].map(m=>m[0]))'
 ```
 
-The response contains URLs in the format:
-```
-![image](https://github.com/user-attachments/assets/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
-```
-
-Extract all image URLs/markdown from the textarea value before clearing it.
+Keep the whole `<img …>` tag if you want to preserve GitHub's auto-detected `width`/`height`; otherwise take just the URL and wrap it yourself (`![alt](url)` or your own `<img>`).
 
 ### Step 5: Clear the textarea (do not submit the comment)
+
+Dispatch an `input` event after clearing so GitHub's comment-draft autosave also clears — otherwise the staged content can reappear on the next page load.
 
 ```javascript
 // MCP-based tools
 () => {
   const ta = document.getElementById('new_comment_field')
-           || document.querySelector('textarea[id*="comment"]');
-  if (ta) { ta.value = ""; return "cleared"; }
-  return "textarea not found";
+           || document.querySelector('textarea[name="comment[body]"], textarea[id*="comment"]');
+  if (!ta) return "textarea not found";
+  ta.value = "";
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  return "cleared";
 }
 ```
 
 ```bash
 # agent-browser
-agent-browser eval 'const ta = document.getElementById("new_comment_field") || document.querySelector("textarea[id*=comment]"); if(ta){ta.value=""} "cleared"'
+agent-browser eval 'const ta=document.getElementById("new_comment_field")||document.querySelector("textarea[id*=comment]"); if(ta){ta.value="";ta.dispatchEvent(new Event("input",{bubbles:true}))} "cleared"'
 ```
 
 ### Step 6: Embed images in the PR
+
+Embed using either the full `<img …>` tag GitHub gave you (keeps the auto-detected size) or plain markdown `![alt](url)`.
 
 **Option A — Update PR description** (append images to existing body):
 ```bash
 EXISTING_BODY=$(gh pr view {PR_NUMBER} --json body -q .body)
 
-gh pr edit {PR_NUMBER} --body "$(printf '%s\n\n## Screenshots\n\n%s' "$EXISTING_BODY" "![screenshot](https://github.com/user-attachments/assets/...)")"
+gh pr edit {PR_NUMBER} --body "$(printf '%s\n\n## Screenshots\n\n%s' "$EXISTING_BODY" '<img width="800" alt="screenshot" src="https://github.com/user-attachments/assets/..." />')"
 ```
 
 **Option B — Post as a new comment**:
 ```bash
-gh pr comment {PR_NUMBER} --body "## Screenshots
+gh pr comment {PR_NUMBER} --body '## Screenshots
 
-![screenshot](https://github.com/user-attachments/assets/...)"
+<img width="800" alt="screenshot" src="https://github.com/user-attachments/assets/..." />'
 ```
 
 Use Option A by default unless the user explicitly asks for a comment, or if the PR description is already long and a comment would be cleaner.
@@ -212,10 +216,12 @@ Reload the page and take a screenshot to confirm the images are displayed correc
 | Not logged in (MCP tools) | SSO screen may appear — take snapshot, find "Continue" button, click it |
 | Not logged in (agent-browser) | Use `--headed` mode, navigate to login page, ask user to log in manually |
 | Browser window not visible | For agent-browser, ensure `--headed` flag is used |
-| File path with special characters (e.g., Unicode narrow spaces from CleanShot) | Copy file to `/tmp/` with a simple name: `cp /path/CleanShot*keyword*.png /tmp/screenshot.png` |
-| File upload fails | Ensure the file path is absolute |
-| Textarea doesn't contain URLs yet | Wait 3–5 seconds after upload before running JS eval; retry once if needed |
-| Textarea selector not found | GitHub UI changes occasionally — use the multi-selector JS in Step 2 to find the current element |
+| File path with special characters (e.g., Unicode narrow spaces from CleanShot) | Stage a copy with a simple name inside the repo: `cp /path/'CleanShot ... .png' ./.upload-staging.png` (in-repo so MCP tools can read it — see Step 0) |
+| `Access denied: path ... not within any of the configured workspace roots` | MCP browser tools only read files inside their workspace root. Stage the image **inside the repo** (Step 0), not `/tmp/` |
+| Can't find a uid/ref for the file input | The `<input type="file">` is `display:none` and absent from the snapshot — target the visible *"Paste, drop, or click to add files"* dropzone or *"Attach files"* button instead (Step 2) |
+| Textarea has the file but no `![](url)` markdown | GitHub now inserts an `<img …>` HTML tag instead. Extract the `user-attachments/assets/` URL with the regex in Step 4, which matches both forms |
+| Textarea doesn't contain URLs yet | GitHub shows an `![Uploading…]()` placeholder first — poll the textarea until a `user-attachments/assets/` URL appears (1–5s) instead of a fixed wait |
+| Textarea selector not found | GitHub UI changes occasionally — fall back through `new_comment_field` → `textarea[name="comment[body]"]` → `textarea[id*="comment"]` (Step 2) |
 | Chrome DevTools MCP disconnected | Reconnect via `/mcp` command |
 | agent-browser not found | `npm install -g agent-browser && agent-browser install` |
 | No browser tools found | Use `ToolSearch` to search for available browser tools |
@@ -223,7 +229,9 @@ Reload the page and take a screenshot to confirm the images are displayed correc
 
 ## Notes
 
-- GitHub `user-attachments/assets/` URLs are **persistent** — images remain accessible even without submitting the comment
+- GitHub `user-attachments/assets/` URLs are **persistent** — images remain accessible even without submitting the comment. When rendered, GitHub rewrites them to `private-user-images.githubusercontent.com` CDN URLs; the `user-attachments/assets/...` form is the stable one to embed
+- On upload, GitHub injects an `<img width=… height=… alt=… src=… />` tag (alt is derived from the filename) — not `![](…)` markdown. Extract by the asset URL, not the wrapper
+- MCP browser tools can only read upload files inside their workspace root, so stage images in the repo, not `/tmp/`
 - Editing the description directly in the browser UI is fragile due to GitHub UI structure changes — updating via `gh pr edit` is strongly preferred
 - Multiple images can be uploaded in a single session before extracting URLs
 - MCP-based tools connect to existing browser instances, preserving cookies and login sessions
