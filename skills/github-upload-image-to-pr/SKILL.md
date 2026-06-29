@@ -9,7 +9,7 @@ description: >-
   even if they don't use the word "upload" — phrases like "put the screenshot in the PR" or
   "show the image in the PR" should trigger this skill.
   Supports Playwright MCP / Chrome DevTools MCP / agent-browser as browser automation backends.
-allowed-tools: Bash(agent-browser:*), Bash(gh:*), Bash(npx:*), Bash(cp:*), ToolSearch, Read, Glob, Write
+allowed-tools: Bash(agent-browser:*), Bash(gh:*), Bash(npx:*), Bash(cp:*), Bash(rm:*), Bash(sleep:*), mcp__playwright, mcp__chrome-devtools, ToolSearch, Read, Glob, Write
 license: MIT
 ---
 
@@ -131,13 +131,13 @@ Use the in-repo staged path from Step 0 for the MCP backends (see the workspace-
 
 While uploading, GitHub shows a placeholder (`![Uploading file.png…]()`) in the textarea, then swaps it for the final reference once the file lands. So **poll the textarea until a `user-attachments/assets/` URL appears** instead of trusting a fixed sleep — it usually takes 1–5 seconds.
 
-**Important format change (the thing that breaks the old skill):** GitHub now injects an **HTML `<img>` tag**, not the old `![alt](url)` markdown:
+**GitHub inserts the reference as an HTML `<img>` tag** (with auto-detected `width`/`height`), e.g.:
 
 ```
 <img width="342" height="354" alt="filename" src="https://github.com/user-attachments/assets/8fc1b84a-..." />
 ```
 
-So extraction must **not** assume `![...](...)`. Match the asset URL by itself — this captures both the current `<img src>` form and any legacy markdown form:
+Don't assume the `![alt](url)` markdown form — match the asset URL itself so extraction stays robust to either form:
 
 ```javascript
 // MCP-based tools — returns every asset URL plus the raw value for sanity-checking
@@ -219,7 +219,7 @@ Reload the page and take a screenshot to confirm the images are displayed correc
 | File path with special characters (e.g., Unicode narrow spaces from CleanShot) | Stage a copy with a simple name inside the repo: `cp /path/'CleanShot ... .png' ./.upload-staging.png` (in-repo so MCP tools can read it — see Step 0) |
 | `Access denied: path ... not within any of the configured workspace roots` | MCP browser tools only read files inside their workspace root. Stage the image **inside the repo** (Step 0), not `/tmp/` |
 | Can't find a uid/ref for the file input | The `<input type="file">` is `display:none` and absent from the snapshot — target the visible *"Paste, drop, or click to add files"* dropzone or *"Attach files"* button instead (Step 2) |
-| Textarea has the file but no `![](url)` markdown | GitHub now inserts an `<img …>` HTML tag instead. Extract the `user-attachments/assets/` URL with the regex in Step 4, which matches both forms |
+| Textarea has the file but no `![](url)` markdown | GitHub inserts an `<img …>` HTML tag for images, not Markdown. Extract the `user-attachments/assets/` URL with the regex in Step 4, which matches both forms |
 | Textarea doesn't contain URLs yet | GitHub shows an `![Uploading…]()` placeholder first — poll the textarea until a `user-attachments/assets/` URL appears (1–5s) instead of a fixed wait |
 | Textarea selector not found | GitHub UI changes occasionally — fall back through `new_comment_field` → `textarea[name="comment[body]"]` → `textarea[id*="comment"]` (Step 2) |
 | Chrome DevTools MCP disconnected | Reconnect via `/mcp` command |
