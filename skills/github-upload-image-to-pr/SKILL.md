@@ -8,8 +8,9 @@ description: >-
   Always use this skill when the user wants to visually document changes in a pull request,
   even if they don't use the word "upload" — phrases like "put the screenshot in the PR" or
   "show the image in the PR" should trigger this skill.
-  Supports Playwright MCP / Chrome DevTools MCP / agent-browser as browser automation backends.
-allowed-tools: Bash(agent-browser:*), Bash(gh:*), Bash(npx:*), Bash(cp:*), Bash(rm:*), Bash(sleep:*), mcp__playwright, mcp__chrome-devtools, ToolSearch, Read, Glob, Write
+  Prefers Chrome DevTools MCP (most stable) as the browser automation backend, falling back to
+  Playwright MCP or agent-browser only when Chrome DevTools MCP is unavailable.
+allowed-tools: Bash(agent-browser:*), Bash(gh:*), Bash(npx:*), Bash(cp:*), Bash(rm:*), Bash(sleep:*), mcp__chrome-devtools, mcp__playwright, ToolSearch, Read, Glob, Write
 license: MIT
 ---
 
@@ -48,32 +49,35 @@ Staging also sidesteps paths with special characters (e.g. the Unicode narrow sp
 
 ### Priority Order
 
-1. **Playwright MCP** (MCP connection, `mcp__playwright__*`) — connects to existing browser, login state preserved
-2. **Chrome DevTools MCP** (MCP connection, `mcp__chrome-devtools__*`) — connects to existing browser, login state preserved
-3. **agent-browser** (CLI via Bash — fallback, login state preserved with `--profile`)
+1. **Chrome DevTools MCP** (MCP connection, `mcp__chrome-devtools__*`) — **preferred**: connects to existing browser, login state preserved, most stable of the three backends
+2. **Playwright MCP** (MCP connection, `mcp__playwright__*`) — use only if Chrome DevTools MCP is unavailable; connects to existing browser, login state preserved
+3. **agent-browser** (CLI via Bash — last-resort fallback, login state preserved with `--profile`)
 
 MCP-based tools connect to an already-running browser instance, so **GitHub login state is automatically preserved**. agent-browser can persist login state using `--profile ~/.agent-browser-github`.
 
 ### Detection
 
 ```
-# 1. Search for MCP-based browser tools (preferred)
+# 1. Search specifically for Chrome DevTools MCP first (preferred, most stable)
+ToolSearch: "select:mcp__chrome-devtools__navigate_page,mcp__chrome-devtools__take_snapshot,mcp__chrome-devtools__upload_file,mcp__chrome-devtools__evaluate_script,mcp__chrome-devtools__click"
+
+# 2. Only if Chrome DevTools MCP tools aren't found, search for Playwright MCP
 ToolSearch: "browser navigate upload"
 
-# 2. Fall back to agent-browser only if no MCP tools found
+# 3. Fall back to agent-browser only if no MCP tools found at all
 Bash: agent-browser --version
 ```
 
 ## Tool Compatibility Matrix
 
-| Operation | Playwright MCP | Chrome DevTools MCP | agent-browser (CLI/Bash) |
-|-----------|----------------|---------------------|--------------------------|
-| **Navigate** | `browser_navigate` | `navigate_page` | `agent-browser --headed open {url}` |
-| **Snapshot** | `browser_snapshot` | `take_snapshot` | `agent-browser snapshot` |
-| **Screenshot** | `browser_take_screenshot` | `take_screenshot` | `agent-browser screenshot {path}` |
-| **Click** | `browser_click` (ref) | `click` (uid) | `agent-browser click {ref}` |
-| **File Upload** | `browser_file_upload` (paths) | `upload_file` (uid, filePath) | `agent-browser upload {ref} {path}` |
-| **JS Eval** | `browser_evaluate` (function) | `evaluate_script` (function) | `agent-browser eval '{js}'` |
+| Operation | Chrome DevTools MCP (preferred) | Playwright MCP (fallback) | agent-browser (CLI/Bash) |
+|-----------|----------------------------------|----------------------------|--------------------------|
+| **Navigate** | `navigate_page` | `browser_navigate` | `agent-browser --headed open {url}` |
+| **Snapshot** | `take_snapshot` | `browser_snapshot` | `agent-browser snapshot` |
+| **Screenshot** | `take_screenshot` | `browser_take_screenshot` | `agent-browser screenshot {path}` |
+| **Click** | `click` (uid) | `browser_click` (ref) | `agent-browser click {ref}` |
+| **File Upload** | `upload_file` (uid, filePath) | `browser_file_upload` (paths) | `agent-browser upload {ref} {path}` |
+| **JS Eval** | `evaluate_script` (function) | `browser_evaluate` (function) | `agent-browser eval '{js}'` |
 | **Login State** | Preserved | Preserved | Preserved with `--profile` |
 
 ## Steps
@@ -83,13 +87,13 @@ Bash: agent-browser --version
 Navigate to the PR page and immediately take a snapshot to verify login state.
 
 ```javascript
-// Playwright MCP
-browser_navigate({ url: "https://github.com/{owner}/{repo}/pull/{number}" })
-
-// Chrome DevTools MCP
+// Chrome DevTools MCP (preferred)
 navigate_page({ url: "https://github.com/{owner}/{repo}/pull/{number}", type: "url" })
 
-// agent-browser (use --profile to persist login state)
+// Playwright MCP (fallback if Chrome DevTools MCP is unavailable)
+browser_navigate({ url: "https://github.com/{owner}/{repo}/pull/{number}" })
+
+// agent-browser (last-resort fallback; use --profile to persist login state)
 agent-browser --headed --profile ~/.agent-browser-github open "https://github.com/{owner}/{repo}/pull/{number}"
 ```
 
@@ -120,9 +124,9 @@ The comment box itself is a `<file-attachment>` web component wrapping a `<texta
 Upload each file with the detected tool, passing the **dropzone / attach-button uid** from Step 2 (never the hidden input):
 
 ```javascript
-// Chrome DevTools MCP: upload_file({ uid: <dropzone uid>, filePath: <path inside the workspace root> })
-// Playwright MCP:      browser_file_upload({ paths: [<path inside the workspace root>] }) once the file chooser is open
-// agent-browser:       agent-browser upload {ref} {absolute_path}    (any path, /tmp/ ok)
+// Chrome DevTools MCP (preferred): upload_file({ uid: <dropzone uid>, filePath: <path inside the workspace root> })
+// Playwright MCP (fallback):       browser_file_upload({ paths: [<path inside the workspace root>] }) once the file chooser is open
+// agent-browser (last resort):     agent-browser upload {ref} {absolute_path}    (any path, /tmp/ ok)
 ```
 
 Use the in-repo staged path from Step 0 for the MCP backends (see the workspace-root note there). Wait **2–3 seconds between uploads**. For multiple images, upload them all into the same comment box before extracting URLs — more efficient than navigating between uploads.
@@ -206,7 +210,7 @@ Reload the page and take a screenshot to confirm the images are displayed correc
 
 - **Image sizing**: Control display size via HTML `<img>` tags: `<img width="800" alt="description" src="..." />`
 - **Multiple images**: Upload all images in one session to the same textarea; extract all URLs before clearing
-- **Prefer MCP tools**: Always prefer Playwright or Chrome DevTools MCP over agent-browser for simpler setup
+- **Prefer Chrome DevTools MCP**: It's the most stable backend — always try it first via `ToolSearch`. Fall back to Playwright MCP only if Chrome DevTools MCP tools aren't found, and to agent-browser only if no MCP tools are available at all
 - **agent-browser login persistence**: Use `--profile ~/.agent-browser-github` to persist GitHub login across sessions
 
 ## Troubleshooting
