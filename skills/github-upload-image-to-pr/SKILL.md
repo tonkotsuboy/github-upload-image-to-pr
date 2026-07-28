@@ -108,6 +108,20 @@ agent-browser --headed --profile ~/.agent-browser-github open "https://github.co
 
 Scroll to the comment form at the bottom of the PR and take a snapshot.
 
+**Save the snapshot to a file instead of returning it inline.** A PR page snapshot is easily several hundred lines (description + every review comment), and you only need one uid from it. Chrome DevTools MCP's `take_snapshot` accepts `filePath`, so write it out and `grep` for the dropzone:
+
+```javascript
+// Chrome DevTools MCP — write the snapshot out, then grep for the uid
+take_snapshot({ filePath: "./.upload-snapshot.txt" })
+```
+
+```bash
+grep -n "Paste, drop, or click to add files" ./.upload-snapshot.txt
+#   549:      uid=3_529 button "Paste, drop, or click to add files"
+```
+
+Delete the snapshot file when you're done. Without this, the snapshot cost can look prohibitive enough to talk you out of `upload_file` altogether and into a far worse workaround (inlining the image as base64 into an `evaluate_script` body — thousands of characters that must be transcribed byte-perfect).
+
 **Key gotcha:** GitHub's real `<input type="file">` (id `fc-new_comment_field`) is `display:none`, so it does **not** appear in the accessibility snapshot — you can't get a uid/ref for it that way, and clicking it isn't possible. Instead, target the **visible affordance that opens the file picker**: the dropzone labeled *"Paste, drop, or click to add files"*, or the toolbar *"Attach files"* button. The browser tool clicks it, intercepts the native file chooser, and hands over your file.
 
 In a snapshot these show up as:
@@ -206,6 +220,19 @@ Use Option A by default unless the user explicitly asks for a comment, or if the
 
 Reload the page and take a screenshot to confirm the images are displayed correctly.
 
+Also assert programmatically that the images actually loaded. **Match both URL forms**: when rendering, GitHub rewrites `user-attachments/assets/...` to a signed `private-user-images.githubusercontent.com` URL, so searching only for the embedded form reports zero images and makes it look like nothing was attached.
+
+```javascript
+// MCP-based tools — every embedded image plus whether the browser decoded it
+() => {
+  const imgs = [...document.querySelectorAll('img')]
+    .filter((el) => /user-attachments|private-user-images/.test(el.src));
+  return imgs.map((el) => ({ alt: el.alt, loaded: el.naturalWidth > 0 }));
+}
+```
+
+`loaded: true` on every entry means the embed worked. An empty array means the `<img>` tags never made it into the body — re-check Step 6.
+
 ## Tips
 
 - **Image sizing**: Control display size via HTML `<img>` tags: `<img width="800" alt="description" src="..." />`
@@ -223,6 +250,8 @@ Reload the page and take a screenshot to confirm the images are displayed correc
 | File path with special characters (e.g., Unicode narrow spaces from CleanShot) | Stage a copy with a simple name inside the repo: `cp /path/'CleanShot ... .png' ./.upload-staging.png` (in-repo so MCP tools can read it — see Step 0) |
 | `Access denied: path ... not within any of the configured workspace roots` | MCP browser tools only read files inside their workspace root. Stage the image **inside the repo** (Step 0), not `/tmp/` |
 | Can't find a uid/ref for the file input | The `<input type="file">` is `display:none` and absent from the snapshot — target the visible *"Paste, drop, or click to add files"* dropzone or *"Attach files"* button instead (Step 2) |
+| PR page snapshot is huge / feels too expensive to take | Pass `filePath` to `take_snapshot` and `grep` the file for the dropzone uid (Step 2). Don't let snapshot size push you into inlining base64 into `evaluate_script` |
+| Verification finds 0 images even though they render | GitHub rewrites the asset URL to `private-user-images.githubusercontent.com` on render — match both that and `user-attachments`, then check `naturalWidth > 0` (Step 7) |
 | Textarea has the file but no `![](url)` markdown | GitHub inserts an `<img …>` HTML tag for images, not Markdown. Extract the `user-attachments/assets/` URL with the regex in Step 4, which matches both forms |
 | Textarea doesn't contain URLs yet | GitHub shows an `![Uploading…]()` placeholder first — poll the textarea until a `user-attachments/assets/` URL appears (1–5s) instead of a fixed wait |
 | Textarea selector not found | GitHub UI changes occasionally — fall back through `new_comment_field` → `textarea[name="comment[body]"]` → `textarea[id*="comment"]` (Step 2) |
