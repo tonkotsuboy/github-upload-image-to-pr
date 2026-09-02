@@ -1,5 +1,8 @@
 # GitHub Upload Image to PR
 
+> [!IMPORTANT]
+> **On GitHub CLI v2.99.0+, use `gh`'s native `--attach` flag instead of this skill.** `gh pr create --attach ./screenshot.png` (or `gh pr edit --attach ./video.mp4`) uploads and embeds the file directly — no browser automation, no MCP server, no flakiness. See the [v2.99.0 release notes](https://github.com/cli/cli/releases/tag/v2.99.0). This skill is kept as a fallback for older `gh` versions.
+
 An AI agent skill that uploads local images to a GitHub PR and embeds them in the description or comments — automatically, just by asking.
 
 [日本語版はこちら](./README.ja.md)
