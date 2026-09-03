@@ -1,7 +1,7 @@
 # GitHub Upload Image to PR
 
 > [!IMPORTANT]
-> **On GitHub CLI v2.99.0+, use `gh`'s native `--attach` flag instead of this skill.** `gh pr create --attach ./screenshot.png` (or `gh pr edit --attach ./video.mp4`) uploads and embeds the file directly — no browser automation, no MCP server, no flakiness. See the [v2.99.0 release notes](https://github.com/cli/cli/releases/tag/v2.99.0). This skill is kept as a fallback for older `gh` versions.
+> **This skill now prefers GitHub CLI's native `--attach` flag (`gh` 2.99.0+).** When your `gh` is new enough, it runs `gh pr edit --attach ./screenshot.png` (or `gh pr comment --attach`) and is done — no browser automation, no MCP server, no flakiness. On older `gh` it prompts you to upgrade and falls back to the browser route so the work still gets done. See the [v2.99.0 release notes](https://github.com/cli/cli/releases/tag/v2.99.0) and [GitHub's docs](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli).
 
 An AI agent skill that uploads local images to a GitHub PR and embeds them in the description or comments — automatically, just by asking.
 
@@ -31,13 +31,24 @@ Trigger the skill with phrases like:
 
 ## How It Works
 
-### Why not just use the GitHub API?
+The skill picks one of two paths based on your `gh` version.
 
-GitHub does **not** provide a public REST API endpoint for uploading image attachments to embed in PR descriptions or comments. The official GitHub API allows creating/editing PR content as markdown text, but has no endpoint for uploading binary files like images.
+### Path A — `gh --attach` (preferred, `gh` 2.99.0+)
 
-As a workaround, this skill uses **browser automation** to upload images the same way a human would through the GitHub web UI.
+GitHub CLI 2.99.0 added a repeatable `--attach` flag to `gh pr create` / `pr edit` / `pr comment` (and the matching `gh issue` commands), so uploading is a single command:
 
-### The mechanism
+```bash
+gh pr edit 23 --attach './screenshot.png#Login error state'
+gh pr comment 23 --attach ./before.png --attach ./after.png
+```
+
+Without `--body`, the existing description is kept and the attachment appended. If the body references a local path such as `![before](./before.png)`, that reference is rewritten in place — which is how you get Before/After tables and other layouts from one command.
+
+Requires push access to the repository, and works on GitHub.com and GitHub Enterprise Cloud (not Enterprise Server).
+
+### Path B — browser upload (fallback)
+
+GitHub does **not** provide a public REST API endpoint for uploading image attachments, so before `--attach` existed the only route was to drive a browser the way a human would:
 
 1. **Open the PR page** in a browser via Chrome DevTools MCP or Playwright MCP
 2. **Locate the comment textarea** at the bottom of the PR conversation
@@ -46,15 +57,15 @@ As a workaround, this skill uses **browser automation** to upload images the sam
 5. **Clear the textarea** (the image URL remains valid even without posting the comment)
 6. **Update the PR description** via `gh pr edit`, embedding the image as markdown
 
-This approach works because GitHub's image hosting is separate from comment submission — images are persisted the moment they're uploaded, regardless of whether the comment is ever posted.
+This works because GitHub's image hosting is separate from comment submission — images persist the moment they're uploaded, whether or not the comment is ever posted. The skill uses this path when `gh` is older than 2.99.0, when the host is Enterprise Server, or when you lack push access.
 
 ## Requirements
 
 - An AI agent that supports skills (e.g., [Claude Code](https://claude.ai/claude-code))
-- One of the following browser automation tools:
+- [GitHub CLI (`gh`)](https://cli.github.com/) — **2.99.0 or newer for Path A**; required in both paths
+- Only for Path B (older `gh`), one of the following browser automation tools:
   - **Chrome DevTools MCP** (recommended — connects to your existing browser, login state preserved)
   - **Playwright MCP** (connects to an existing browser instance)
-- [GitHub CLI (`gh`)](https://cli.github.com/) — for updating the PR description via API
 
 ## License
 
